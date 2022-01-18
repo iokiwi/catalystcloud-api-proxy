@@ -1,0 +1,213 @@
+heat_template_version: 2018-08-31
+
+description: |
+  Proxy through catalyst cloud
+parameters:
+  image_id:
+    type: string
+    default: ubuntu-20.04-x86_64
+  flavor_id:
+    type: string
+    default: c1.c1r1
+
+resources:
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Nova::Server
+  server:
+    type: OS::Nova::Server
+    properties:
+      block_device_mapping_v2:
+        - boot_index: 0
+          device_type: disk
+          device_name: vda
+          delete_on_termination: True
+          image: { get_param: image_id }
+          volume_size: 15
+      flavor: { get_param: flavor_id }
+      networks:
+        - network: { get_resource: network }
+      key_name: { get_resource: keypair }
+      security_groups:
+       - { get_resource: security_group }
+      user_data: |
+        #!/bin/bash
+        apt update
+        apt install -y apt-transport-https ca-certificates curl software-properties-common
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+        add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable"
+        apt-cache policy docker-ce
+        apt install -y docker-ce -y
+        sudo curl -L "https://github.com/docker/compose/releases/download/1.27.4/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+        # docker run -d --network host nginx:latest
+        cat << EOF > nginx.conf
+            user nginx;
+            worker_processes  auto;
+
+            error_log  /var/log/nginx/error.log notice;
+            pid        /var/run/nginx.pid;
+
+            events {
+                worker_connections  1024;
+            }
+            stream {
+                # Object Store
+                server {
+                    listen 443;
+                    proxy_pass object-storage.nz-hlz-1.catalystcloud.io:443;
+                }
+                # Registration
+                server {
+                    listen 8040;
+                    proxy_pass api.cloud.catalyst.net.nz:8040;
+                }
+                # Identity
+                server {
+                    listen 5000;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:5000;
+                }
+                # Cloudformation
+                server {
+                    listen 8000;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8000;
+                }
+                # Orchestration
+                server {
+                    listen 8004;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8004;
+                }
+                # Alarming
+                server {
+                    listen 8042;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8042;
+                }
+                # Support
+                server {
+                    listen 8050;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8050;
+                }
+                # EC2
+                server {
+                    listen 8773;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8773;
+                }
+                # Compute / Nova
+                server {
+                    listen 8774;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8774;
+                }
+                # Volume / Block Storage
+                server {
+                    listen 8776;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8776;
+                }
+                # Metering
+                server {
+                    listen 8777;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8777;
+                }
+                # Database
+                server {
+                    listen 8779;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:8779;
+                }
+                # Image
+                server {
+                    listen 9292;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:9292;
+                }
+                # Key Manager
+                server {
+                    listen 9311;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:9311;
+                }
+                # Container Infra
+                server {
+                    listen 9511;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:9511;
+                }
+                # Network / Neutron
+                server {
+                    listen 9696;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:9696;
+                }
+                # Load Balancer
+                server {
+                    listen 9876;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:9876;
+                }
+                # Rating V2
+                server {
+                    listen 9999;
+                    proxy_pass api.nz-hlz-1.catalystcloud.io:9999;
+                }
+            }
+        EOF
+        docker run -d -v $(pwd)/nginx.conf:/etc/nginx/nginx.conf:ro --network host nginx:latest
+
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Neutron::SecurityGroup
+  security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+        - protocol: TCP
+          direction: egress
+          remote_ip_prefix: 0.0.0.0/0
+      rules:
+        - protocol: TCP
+          port_range_min: 1
+          port_range_max: 65535
+          remote_ip_prefix: 0.0.0.0/0
+
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Nova::KeyPair
+  keypair:
+    type: OS::Nova::KeyPair
+    properties:
+      name: { get_param: OS::stack_name }
+      save_private_key: true
+
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Neutron::Net
+  network:
+    type: OS::Neutron::Net
+
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Neutron::Subnet
+  subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network: { get_resource: network }
+      cidr: 10.0.0.0/24
+      allocation_pools:
+        - start: 10.0.0.2
+          end: 10.0.0.254
+
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Neutron::Router
+  router:
+    type: OS::Neutron::Router
+    properties:
+      external_gateway_info:
+        network: public-net
+
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Neutron::RouterInterface
+  router_interface:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router: { get_resource: router }
+      subnet: { get_resource: subnet }
+
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Neutron::Net
+  floating_ip_address:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network: public-net
+
+  # https://docs.openstack.org/heat/latest/template_guide/openstack.html#OS::Neutron::FloatingIPAssociation
+  floating_ip_association:
+    type: OS::Neutron::FloatingIPAssociation
+    properties:
+      floatingip_id: { get_resource: floating_ip_address }
+      port_id: { get_attr: [server, addresses, { get_resource: network }, 0, port]}
+
+outputs:
+  floating_ip: 
+    value: { get_attr: [floating_ip_address, "floating_ip_address"] }
+  private_key:
+    value: { get_attr: [keypair, "private_key"] }
